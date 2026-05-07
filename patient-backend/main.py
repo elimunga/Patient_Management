@@ -6,7 +6,9 @@ from pydantic import BaseModel
 from datetime import date
 from typing import List, Optional
 
-# --- NEW DOTENV IMPORTS ---
+# --- NEW ML IMPORTS ---
+import joblib
+import numpy as np
 from dotenv import load_dotenv
 
 # 1. Load the secrets from your .env file into the application
@@ -21,7 +23,17 @@ DB_NAME = "patient_db" # Make sure this matches your actual PostgreSQL database 
 # 3. Initialize FastAPI
 app = FastAPI()
 
-# 4. Update your database connection function to use the secure variables
+# 4. Load ML Model Safely
+try:
+    maternal_model = joblib.load("maternal_knn_model.pkl")
+    maternal_scaler = joblib.load("maternal_scaler.pkl")
+    print("AI Classification Model loaded successfully.")
+except Exception as e:
+    print("Warning: ML model not found. Run train_model.py first.")
+    maternal_model = None
+    maternal_scaler = None
+
+# 5. Database connection function using secure variables
 def get_db_connection():
     try:
         conn = psycopg2.connect(
@@ -35,10 +47,15 @@ def get_db_connection():
         print("Secure Database connection failed:", e)
         raise HTTPException(status_code=500, detail="Database connection error")
 
-def get_db_connection():
-    return psycopg2.connect(**DB_CONFIG)
-
 # --- Pydantic Models ---
+class MaternalHealthData(BaseModel):
+    Age: float
+    SystolicBP: float
+    DiastolicBP: float
+    BS: float
+    BodyTemp: float
+    HeartRate: float
+
 class PatientCreate(BaseModel):
     patient_id: str
     first_name: str
@@ -69,6 +86,35 @@ class GeneralAssessmentCreate(BaseModel):
     comments: Optional[str] = ""
 
 # --- Endpoints ---
+
+@app.post("/api/predict-maternal-risk", status_code=200)
+def predict_risk(data: MaternalHealthData):
+    if maternal_model is None or maternal_scaler is None:
+        raise HTTPException(status_code=503, detail="AI Model is unavailable. Please run train_model.py first.")
+
+    try:
+        # Format the incoming data as a 2D numpy array
+        input_features = np.array([[
+            data.Age, 
+            data.SystolicBP, 
+            data.DiastolicBP, 
+            data.BS, 
+            data.BodyTemp, 
+            data.HeartRate
+        ]])
+        
+        # Scale the features
+        scaled_features = maternal_scaler.transform(input_features)
+        
+        # Make prediction
+        prediction = maternal_model.predict(scaled_features)
+        
+        return {
+            "status": "success",
+            "predicted_risk_level": prediction[0]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/patients/register", status_code=201)
 def register_patient(patient: PatientCreate):
